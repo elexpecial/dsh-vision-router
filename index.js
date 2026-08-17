@@ -32,6 +32,11 @@ import { pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
 import { appendPromptToImageOnlyMessage, fetchWithOpenAICompatibility } from './lib/http-compat.js'
 import {
+  COPILOT_CHAT_HEADERS,
+  getCopilotAuth,
+  messagesContainImage,
+} from './lib/copilot-auth.mjs'
+import {
   routingCorrectionFor,
   toAnthropicMessages,
   callAnthropicCompatible,
@@ -326,6 +331,10 @@ export const Config = z.object({
         model: z.string(),
         apiKeyEnv: z.string().default(''),
         maxTokens: z.number().step(1).min(1).default(4096),
+        // GitHub Copilot transport: the entry authenticates through the
+        // user's Copilot login (OAuth device flow, see lib/copilot-auth.mjs)
+        // instead of apiKeyEnv; baseURL should be https://api.githubcopilot.com.
+        copilot: z.boolean().default(false),
       }),
     )
     .default([]),
@@ -1759,8 +1768,123 @@ export function toOpenAIContent(blocks, bytesOf) {
   })
 }
 
+/**
+ * GitHub Copilot Responses-API transport (used when an httpProvider entry has
+ * `copilot: true`).
+ *
+ * Copilot's current backend serves vision through the OpenAI Responses API at
+ * `{baseURL}/responses` with `stream: true`; the legacy chat/completions
+ * endpoint rejects image content ("image media type not supported") and gpt-4o
+ * is no longer vision-capable there. Images travel as `input_image` blocks
+ * with a base64 data URI, text as `input_text`; the answer is assembled from
+ * the SSE `delta` fields (plaintext; the non-streaming response is encrypted).
+ */
+export async function callCopilotResponses(provider, messages, options = {}) {
+  const headers = {
+    'content-type': 'application/json',
+    ...COPILOT_CHAT_HEADERS,
+    'x-request-id': crypto.randomUUID(),
+  }
+  const auth = getCopilotAuth()
+  headers.authorization = `Bearer ${await auth.token()}`
+  if (messagesContainImage(messages)) headers['copilot-vision-request'] = 'true'
+
+  const input = (messages ?? []).map((message) => {
+    const role = message?.role === 'assistant' || message?.role === 'developer' || message?.role === 'system'
+      ? message.role
+      : 'user'
+    const content = (Array.isArray(message?.content) ? message.content : []).map((block) => {
+      if (block && block.type === 'image_url' && block.image_url && typeof block.image_url.url === 'string') {
+        return { type: 'input_image', image_url: block.image_url.url }
+      }
+      if (block && block.type === 'text' && typeof block.text === 'string') {
+        return { type: 'input_text', text: block.text }
+      }
+      return { type: 'input_text', text: String(block?.text ?? '') }
+    })
+    return { role, content }
+  })
+
+  const body = {
+    model: provider.model,
+    input,
+    max_output_tokens: options.maxTokens ?? provider.maxTokens ?? 4096,
+    stream: true,
+  }
+  const url = `${provider.baseURL.replace(/\/$/, '')}/responses`
+
+  const request = () =>
+    fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+    })
+
+  let response = await request()
+  if (response.status === 401) {
+    // JWT expired or revoked: invalidate and re-exchange once.
+    auth.invalidate()
+    headers.authorization = `Bearer ${await auth.token()}`
+    response = await request()
+  }
+  if (!response.ok) {
+    const detail = (await response.text().catch(() => '')).slice(0, 300)
+    const retryAfter = Number(response.headers.get('retry-after'))
+    const error = new Error(`copilot provider "${provider.name}": ${response.status} ${detail}`)
+    error.status = response.status
+    error.code = kindForHttpStatus(response.status) ?? 'HTTP_PROVIDER_FAILED'
+    if (Number.isFinite(retryAfter) && retryAfter > 0) {
+      error.providerRetryAfterMs = Math.min(retryAfter * 1000, 60 * 60 * 1000)
+    }
+    throw error
+  }
+  if (!response.body) throw new Error(`copilot provider "${provider.name}": empty stream response`)
+
+  // Assemble the SSE stream: `data:` lines carry JSON events; the answer text
+  // arrives as events with a string `delta` field (content deltas). Non-JSON
+  // lines (keep-alives, comments) and `data: [DONE]` are skipped.
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let text = ''
+  let failure
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    const lines = buffer.split('\n')
+    buffer = lines.pop() ?? ''
+    for (const line of lines) {
+      const trimmed = line.trim()
+      if (!trimmed.startsWith('data:')) continue
+      const payload = trimmed.slice(5).trim()
+      if (payload === '' || payload === '[DONE]') continue
+      let event
+      try {
+        event = JSON.parse(payload)
+      } catch {
+        continue
+      }
+      if (typeof event.delta === 'string') text += event.delta
+      if (event.error && (typeof event.error === 'string' || typeof event.error?.message === 'string')) {
+        failure = typeof event.error === 'string' ? event.error : event.error.message
+      }
+    }
+  }
+  if (failure) throw new Error(`copilot provider "${provider.name}": ${failure}`)
+  const answer = text.trim()
+  if (answer === '') throw new Error(`copilot provider "${provider.name}": empty response`)
+  return answer
+}
+
 /** One non-streaming OpenAI-compatible chat completion; keyless when apiKeyEnv is empty. */
 export async function callOpenAICompatible(provider, messages, options = {}) {
+  if (provider.copilot === true) {
+    // GitHub Copilot transport: Responses API + the user's Copilot login
+    // (lib/copilot-auth.mjs); see callCopilotResponses for the wire shape.
+    return callCopilotResponses(provider, messages, options)
+  }
   const headers = { 'content-type': 'application/json' }
   const apiKeyEnv = typeof provider.apiKeyEnv === 'string' ? provider.apiKeyEnv : ''
   let resolvedApiKey = ''
@@ -1794,7 +1918,7 @@ export async function callOpenAICompatible(provider, messages, options = {}) {
       },
       { active: true, providerName: provider.name },
     )
-  const response = await request()
+  let response = await request()
   if (!response.ok) {
     // Typed failure: the resilience layer classifies by status/code instead of
     // parsing prose. A 429 is thrown IMMEDIATELY with its Retry-After attached

@@ -1,7 +1,7 @@
 {
   "name": "dsh-vision-router",
-  "version": "1.4.4",
-  "description": "Eyes for text-only DeepSeek Harness agents: built-in free vision chain (no key) + pixel-level vision tools (Q&A, grounding, crop, pixel diff, colors, OCR, SVG trace, cutout, screenshots). One-command install, no Python, image turns work like ordinary tool-calling turns.",
+  "version": "1.4.5-copilot.1",
+  "description": "Eyes for text-only DeepSeek Harness agents: built-in free vision chain (no key) + pixel-level vision tools (Q&A, grounding, crop, pixel diff, colors, OCR, SVG trace, cutout, screenshots). One-command install, no Python, image turns work like ordinary tool-calling turns. Local fork adding a GitHub Copilot vision transport (OAuth device flow).",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -11,7 +11,8 @@
   "type": "module",
   "main": "entry.js",
   "bin": {
-    "dsh-vision-router": "./lib/doctor-cli.js"
+    "dsh-vision-router": "./lib/doctor-cli.js",
+    "dsh-vision-router-copilot-login": "./scripts/copilot-login.mjs"
   },
   "exports": {
     ".": "./entry.js",
@@ -29,7 +30,8 @@
     "entry.js",
     "index.js",
     "lib",
-    "presets"
+    "presets",
+    "scripts"
   ],
   "engines": {
     "node": ">=22"

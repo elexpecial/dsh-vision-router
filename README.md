@@ -242,6 +242,50 @@ vision_html_screenshot source="page.html" width=1200 height=720 fullPage=true
 vision_long_screenshot_ocr image="chat-log.png" chunkHeight=1200 overlap=120
 ```
 
+## GitHub Copilot as a vision backend (local fork)
+
+This fork adds a `copilot` transport to `httpProviders`: the vision chain can
+use your **own GitHub Copilot subscription** as the vision model, authorized
+through the standard GitHub login (device flow) — no API key.
+
+```yaml
+httpProviders:
+  - name: copilot
+    baseURL: https://api.githubcopilot.com
+    model: gpt-5.4        # current vision-capable Copilot model (gpt-4o is not)
+    copilot: true
+    maxTokens: 4096
+```
+
+How it works:
+
+1. **Login once** — `npx dsh-vision-router-copilot-login` runs the GitHub OAuth
+   device flow (same flow as the official `copilot` CLI): open
+   `https://github.com/login/device`, enter the code, authorize. The GitHub
+   token is saved to `~/.dsh/.copilot-oauth.json` (mode 0600).
+2. **Every vision call** exchanges the GitHub token for a short-lived Copilot
+   JWT at `api.github.com/copilot_internal/v2/token` (cached in memory,
+   refreshed before expiry, re-exchanged once on 401), then calls
+   `api.githubcopilot.com/responses` (OpenAI Responses API, streaming) with
+   the editor-style headers Copilot expects; image turns set
+   `copilot-vision-request: true` and send the pixels as `input_image` blocks.
+3. **Headless alternative** — set `COPILOT_GITHUB_TOKEN` / `GH_TOKEN` /
+   `GITHUB_TOKEN` to a fine-grained PAT (v2) with the "Copilot Requests"
+   permission; the device flow is then skipped.
+
+Notes:
+
+- The legacy `/chat/completions` endpoint rejects images ("image media type
+  not supported") and `gpt-4o` is no longer vision-capable there — the
+  transport therefore uses `/responses` with `stream: true` and
+  `max_output_tokens`.
+- Copilot quota/limits follow your Copilot plan; usage appears under your
+  GitHub account's Copilot usage.
+- Configure the entry via a profile patch (`~/.dsh/profiles/<profile>/
+  cordis.patch.yml` by id `vision-router`, `config` replaces the bundle row's
+  config, so repeat `progressiveTools` if customized). The settings card does
+  not edit `httpProviders`.
+
 ## Provider fallback chain
 
 The vision tools try backends in order and surface an error only after all of them fail:
