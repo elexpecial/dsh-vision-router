@@ -1,3 +1,35 @@
+<!-- ══════════════════════════════════════════════════════════════════════
+     PERSONAL FORK BANNER — this repository is elexpecial's fork of
+     ysr666/dsh-vision-router. The upstream README follows unchanged.
+     ══════════════════════════════════════════════════════════════════════ -->
+<p align="center">
+  <img src="https://img.shields.io/badge/FORK-elexpecial%2Fdsh--vision--router-1A1A2E?style=for-the-badge" alt="personal fork" />
+</p>
+
+> [!IMPORTANT]
+> **Personal fork for local use only.** This repository is
+> [elexpecial's fork](https://github.com/elexpecial/dsh-vision-router) of
+> [ysr666/dsh-vision-router](https://github.com/ysr666/dsh-vision-router)
+> (upstream, original README below). It adds a **GitHub Copilot vision
+> backend** (use your own Copilot subscription as the vision model — OAuth
+> device-flow login, no API key) on top of the upstream feature set:
+>
+> - **Copilot transport** (`copilot: true` `httpProviders` entry; Responses
+>   API, streaming, `input_image` pixels) — see
+>   [lib/copilot-auth.mjs](lib/copilot-auth.mjs).
+> - **Settings-card section** in DSH Web: enable toggle, model, max output
+>   tokens, inline login (device flow), live test button
+>   (`/_dsh/vision-router/copilot-*` routes).
+> - **Default model `gpt-5.6-luna`** — measured cheapest accurate Copilot
+>   vision model; full benchmark table below.
+> - Fork version `1.5.0-copilot.1` (kept above upstream so the plugin's
+>   update check never offers the npm package).
+>
+> Maintenance notes for agents live in [AGENTS.md](AGENTS.md). This fork is
+> installed locally via a `link:` dependency — do **not** install the npm
+> package on top of it. Issues/PRs about the Copilot backend belong here;
+> everything else belongs upstream.
+
 <p align="center">
   <img src="assets/hero.svg" width="100%" alt="DSH Vision Router — eyes for text-only DeepSeek Harness agents" />
 </p>

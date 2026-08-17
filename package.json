@@ -7,7 +7,7 @@
     "type": "git",
     "url": "git+https://github.com/ysr666/dsh-vision-router.git"
   },
-  "homepage": "https://github.com/ysr666/dsh-vision-router",
+  "homepage": "https://github.com/elexpecial/dsh-vision-router",
   "type": "module",
   "main": "entry.js",
   "bin": {
