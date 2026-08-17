@@ -1,5 +1,4 @@
 // dsh-vision-router: turn-level vision routing + an on-demand vision tool.
-//
 // Routing: the turn that contains an image — from a user upload or a mid-turn
 // tool result such as `read_image` — runs entirely on the vision model with
 // raw pixel access; every other turn keeps the session's own model. Failures
@@ -15,6 +14,10 @@
 // Proxy: an optional `proxy` config (e.g. http://127.0.0.1:10808) patches the
 // process fetch to route only the `proxyHosts` domains through it; everything
 // else (DeepSeek and the rest) stays on the direct connection.
+
+/** 1x1 red PNG used by the copilot-test connection probe. */
+const COPILOT_TEST_PNG_B64 =
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAADElEQVQImWP4z8AAAAMBAQCc479ZAAAAAElFTkSuQmCC'
 
 export * from './lib/vision-resilience.js'
 
@@ -33,6 +36,8 @@ import { promisify } from 'node:util'
 import { appendPromptToImageOnlyMessage, fetchWithOpenAICompatibility } from './lib/http-compat.js'
 import {
   COPILOT_CHAT_HEADERS,
+  copilotAuthStatus,
+  copilotLogin,
   getCopilotAuth,
   messagesContainImage,
 } from './lib/copilot-auth.mjs'
@@ -5934,6 +5939,156 @@ export function apply(ctx, config = {}) {
         },
       })
     }, 'vision-router: test-connection route')
+  })
+
+  // ── GitHub Copilot backend: auth status, device-flow login, and a live
+  // probe — the settings card's Copilot section talks to these routes.
+  const copilotFlows = new Map()
+  let copilotFlowSeq = 0
+  ctx.inject(['webServer'], (webCtx) => {
+    webCtx.effect(() => {
+      const disposers = []
+      disposers.push(webCtx.webServer.register({
+        kind: 'exact',
+        path: '/_dsh/vision-router/copilot-status',
+        handler: async (req, res) => {
+          if (req.method !== 'GET') {
+            res.setHeader('Allow', 'GET')
+            res.writeHead(405)
+            res.end()
+            return
+          }
+          try {
+            const status = await copilotAuthStatus()
+            const configured = httpProvidersOf(current(), false).some((p) => p && p.copilot === true)
+            res.writeHead(200, { 'content-type': 'application/json' })
+            res.end(JSON.stringify({ ok: true, ...status, configured }))
+          } catch (error) {
+            res.writeHead(500, { 'content-type': 'application/json' })
+            res.end(JSON.stringify({ ok: false, error: error && error.message ? error.message : String(error) }))
+          }
+        },
+      }))
+      disposers.push(webCtx.webServer.register({
+        kind: 'exact',
+        path: '/_dsh/vision-router/copilot-login',
+        handler: async (req, res) => {
+          if (req.method === 'GET') {
+            // Poll one started flow: ?flowId=…
+            let flowId
+            try {
+              flowId = new URL(req.url, 'http://localhost').searchParams.get('flowId')
+            } catch {
+              flowId = undefined
+            }
+            const flow = flowId === null ? undefined : copilotFlows.get(flowId)
+            if (flow === undefined) {
+              res.writeHead(404, { 'content-type': 'application/json' })
+              res.end(JSON.stringify({ ok: false, error: 'unknown flow' }))
+              return
+            }
+            let status
+            if (flow.done !== undefined) {
+              try {
+                await flow.done
+                status = 'authorized'
+              } catch (error) {
+                status = 'failed'
+                flow.error = error && error.message ? error.message : String(error)
+              }
+            } else {
+              status = 'pending'
+            }
+            res.writeHead(200, { 'content-type': 'application/json' })
+            res.end(JSON.stringify({ ok: true, status, error: status === 'failed' ? flow.error : undefined }))
+            return
+          }
+          if (req.method !== 'POST') {
+            res.setHeader('Allow', 'GET, POST')
+            res.writeHead(405)
+            res.end()
+            return
+          }
+          for (const [id, flow] of copilotFlows) {
+            if (flow.done === undefined || flow.startedAt === undefined) continue
+            if (Date.now() - flow.startedAt < 15 * 60 * 1000) {
+              res.writeHead(409, { 'content-type': 'application/json' })
+              res.end(JSON.stringify({ ok: false, error: 'a copilot login flow is already pending', flowId: id }))
+              return
+            }
+            copilotFlows.delete(id)
+          }
+          const flow = { id: `flow-${++copilotFlowSeq}`, uri: undefined, code: undefined, startedAt: Date.now(), done: undefined, error: undefined }
+          flow.done = copilotLogin({
+            onPrompt: async ({ verificationUri, userCode }) => {
+              flow.uri = verificationUri
+              flow.code = userCode
+            },
+          })
+          copilotFlows.set(flow.id, flow)
+          for (let i = 0; i < 200 && (flow.uri === undefined || flow.code === undefined); i++) {
+            await new Promise((resolve) => setTimeout(resolve, 50))
+          }
+          if (flow.uri === undefined || flow.code === undefined) {
+            flow.done.catch(() => {})
+            copilotFlows.delete(flow.id)
+            res.writeHead(500, { 'content-type': 'application/json' })
+            res.end(JSON.stringify({ ok: false, error: 'device code request failed' }))
+            return
+          }
+          res.writeHead(200, { 'content-type': 'application/json' })
+          res.end(JSON.stringify({ ok: true, flowId: flow.id, verificationUri: flow.uri, userCode: flow.code }))
+        },
+      }))
+      disposers.push(webCtx.webServer.register({
+        kind: 'exact',
+        path: '/_dsh/vision-router/copilot-test',
+        handler: async (req, res) => {
+          if (req.method !== 'POST') {
+            res.setHeader('Allow', 'POST')
+            res.writeHead(405)
+            res.end()
+            return
+          }
+          const entry = httpProvidersOf(current(), false).find((p) => p && p.copilot === true)
+          const provider = {
+            name: 'copilot',
+            baseURL: 'https://api.githubcopilot.com',
+            model: entry && typeof entry.model === 'string' && entry.model !== '' ? entry.model : 'gpt-5.4',
+            copilot: true,
+            maxTokens: 64,
+          }
+          try {
+            const started = Date.now()
+            const answer = await callCopilotResponses(
+              provider,
+              [{
+                role: 'user',
+                content: [
+                  { type: 'image_url', image_url: { url: `data:image/png;base64,${COPILOT_TEST_PNG_B64}` } },
+                  { type: 'text', text: 'Reply with exactly: OK' },
+                ],
+              }],
+              { maxTokens: 256, signal: AbortSignal.timeout(30000) },
+            )
+            res.writeHead(200, { 'content-type': 'application/json' })
+            res.end(JSON.stringify({ ok: true, model: provider.model, latencyMs: Date.now() - started, answer }))
+          } catch (error) {
+            res.writeHead(502, { 'content-type': 'application/json' })
+            res.end(JSON.stringify({ ok: false, error: error && error.message ? error.message : String(error) }))
+          }
+        },
+      }))
+      return () => {
+        for (const dispose of disposers) {
+          try {
+            dispose()
+          } catch {
+            // best effort on shutdown
+          }
+        }
+      }
+    }, 'vision-router: copilot routes')
   })
 
   // Install-method-agnostic update status for the settings card. Manual
