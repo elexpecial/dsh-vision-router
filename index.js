@@ -6054,7 +6054,7 @@ export function apply(ctx, config = {}) {
           const provider = {
             name: 'copilot',
             baseURL: 'https://api.githubcopilot.com',
-            model: entry && typeof entry.model === 'string' && entry.model !== '' ? entry.model : 'gpt-5.4',
+            model: entry && typeof entry.model === 'string' && entry.model !== '' ? entry.model : 'gpt-5.6-luna',
             copilot: true,
             maxTokens: 64,
           }

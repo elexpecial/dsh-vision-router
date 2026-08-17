@@ -252,10 +252,28 @@ through the standard GitHub login (device flow) — no API key.
 httpProviders:
   - name: copilot
     baseURL: https://api.githubcopilot.com
-    model: gpt-5.4        # current vision-capable Copilot model (gpt-4o is not)
+    model: gpt-5.6-luna   # measured best value; see the table below
     copilot: true
     maxTokens: 4096
 ```
+
+**Measured value per vision call** (same probe, real Copilot `copilot_usage`
+AIU metering, 2026-08):
+
+| Model | Cost (AIU) | Latency | Notes |
+|---|---:|---:|---|
+| **gpt-5.6-luna** | **0.0018** | 3.1s | cheapest + accurate |
+| mai-code-1.1-flash | 0.0054 | 5.6s | occasionally hallucinates details |
+| gpt-5.4-mini | 0.0167 | 2.2s | solid |
+| gpt-5.6-terra | 0.0182 | 2.1s | solid |
+| gpt-5-mini | 0.0261 | 2.9s | often empty output |
+| gpt-5.4 | 0.0902 | 3.5s | ~50× luna |
+| grok-4.5 / 4.6 | 0.121 / 0.416 | 2.5–5.6s | verbose, expensive |
+| gemini-3.x / kimi-k3 | 0.07–0.17 | 1.9–4.4s | need the legacy chat/completions endpoint, not wired |
+
+`gpt-5.6-sol` and `gpt-5.5` are listed by Copilot but rejected with
+`model_not_supported` on this account. The built-in OVH anonymous chain
+remains the automatic final fallback.
 
 How it works:
 
@@ -275,10 +293,11 @@ How it works:
 
 Notes:
 
-- The legacy `/chat/completions` endpoint rejects images ("image media type
-  not supported") and `gpt-4o` is no longer vision-capable there — the
-  transport therefore uses `/responses` with `stream: true` and
-  `max_output_tokens`.
+- The transport targets `/responses` (streaming, `max_output_tokens`): on this
+  account the GPT/grok family is served there, while `/chat/completions`
+  rejects GPT-family images ("image media type not supported"). Some models
+  (gemini-3.x, kimi-k3) exist only on the legacy endpoint — they work with
+  images there but cost more, so they are not wired up.
 - Copilot quota/limits follow your Copilot plan; usage appears under your
   GitHub account's Copilot usage.
 - Configure the entry via a profile patch (`~/.dsh/profiles/<profile>/
